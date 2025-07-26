@@ -3,6 +3,7 @@ package workersai_test
 import (
 	"context"
 	"log"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -63,29 +64,30 @@ func TestWorkersAILive(t *testing.T) {
 
 	// TODO: figure out why this isn't functional
 
-	// gablorkenTool := genkit.DefineTool(g, "gablorken", "use this tool when the user asks to calculate a gablorken, carefuly inspect the user input to determine which value from the prompt corresponds to the input structure",
-	// 	func(ctx *ai.ToolContext, input struct {
-	// 		Value int
-	// 		Over  float64
-	// 	},
-	// 	) (float64, error) {
-	// 		return math.Pow(float64(input.Value), input.Over), nil
-	// 	},
-	// )
+	gablorkenTool := genkit.DefineTool(g, "gablorken", "use this tool when the user asks to calculate a gablorken, carefuly inspect the user input to determine which value from the prompt corresponds to the input structure",
+		func(ctx *ai.ToolContext, input struct {
+			Value int
+			Over  float64
+		},
+		) (float64, error) {
+			return math.Pow(float64(input.Value), input.Over), nil
+		},
+	)
 
-	// t.Run("tool", func(t *testing.T) {
-	// 	resp, err := genkit.Generate(ctx, g,
-	// 		ai.WithPrompt("what is a gablorken of 2 over 3.5? use the gablorken tool"),
-	// 		ai.WithTools(gablorkenTool))
-	// 	if err != nil {
-	// 		t.Fatal(err)
-	// 	}
-	//
-	// 	out := resp.Message.Content[0].Text
-	// 	const want = "11.31"
-	// 	if !strings.Contains(out, want) {
-	// 		t.Errorf("got %q, expecting it to contain %q", out, want)
-	// 	}
-	// })
+	t.Run("tool", func(t *testing.T) {
+		//tools := genkit.ListTools(g)
+		resp, err := genkit.Generate(ctx, g,
+			ai.WithPrompt("what is a gablorken of 2 over 3.5? use the gablorken tool"),
+			ai.WithTools(gablorkenTool))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		out := resp.Message.Content[0].Text
+		const want = "11.31"
+		if !strings.Contains(out, want) {
+			t.Errorf("got %q, expecting it to contain %q", out, want)
+		}
+	})
 
 }

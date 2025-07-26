@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,6 +31,8 @@ import (
 	"github.com/firebase/genkit/go/ai"
 	"github.com/firebase/genkit/go/core"
 	"github.com/firebase/genkit/go/genkit"
+	"github.com/invopop/jsonschema"
+	"github.com/pkg/errors"
 )
 
 const provider = "workersai"
@@ -52,23 +53,47 @@ type workersAIRequest struct {
 	Messages []workersAIMessage `json:"messages,omitempty"`
 	Prompt   string             `json:"prompt,omitempty"`
 	Stream   bool               `json:"stream,omitempty"`
+	Tools    []workersAITool    `json:"tools,omitempty"` // NEW: For sending tool definitions
+	// https://developers.cloudflare.com/workers-ai/features/function-calling/embedded/examples/fetch/
+}
+
+type workersAIToolCall struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+type workersAITool struct {
+	Type     string            `json:"type"`
+	Function workersAIFunction `json:"function"`
+}
+
+type workersAIFunction struct {
+	Name        string             `json:"name"`
+	Description string             `json:"description,omitempty"`
+	Parameters  *jsonschema.Schema `json:"parameters"`
 }
 
 // workersAIMessage represents a message in the Workers AI API format.
 type workersAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string              `json:"role"`
+	Content   string              `json:"content"`
+	ToolCalls []workersAIToolCall `json:"tool_calls,omitempty"` // NEW: For assistant messages requesting tool calls
 }
 
 // workersAIResponse represents the response structure from Workers AI API.
 type workersAIResponse struct {
-	Success bool   `json:"success"`
-	Result  Result `json:"result"`
+	Success bool            `json:"success"`
+	Result  workersAIResult `json:"result"`
 	Errors  []struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	} `json:"errors"`
 	Messages []interface{} `json:"messages"`
+}
+
+type workersAIResult struct {
+	Response  string              `json:"response"`
+	ToolCalls []workersAIToolCall `json:"tool_calls,omitempty"`
 }
 
 // Result represents the result structure in the Workers AI response.
@@ -209,24 +234,21 @@ func (gen *generator) generate(ctx context.Context, input *ai.ModelRequest, cb f
 		Stream: cb != nil,
 	}
 
-	// Check if the model supports chat format or requires prompt format
-	if supportsChatFormat(gen.model) {
-		// Convert messages to Workers AI format
-		var messages []workersAIMessage
-		for _, msg := range input.Messages {
-			content := concatenateTextParts(msg.Content)
-			if content != "" {
-				messages = append(messages, workersAIMessage{
-					Role:    convertRole(msg.Role),
-					Content: content,
-				})
-			}
+	if len(input.Tools) > 0 {
+		var err error
+		req.Tools, err = gen.toWorkersAITools(input.Tools)
+		if err != nil {
+			return nil, err
 		}
-		req.Messages = messages
-	} else {
-		// Use prompt format for models that don't support chat
-		req.Prompt = buildPrompt(input.Messages)
 	}
+
+	// Convert messages to Workers AI format
+	messages, err := gen.toWorkersAIMessages(input.Messages)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Messages = messages
 
 	// Make the API request
 	url := fmt.Sprintf("%s/accounts/%s/ai/run/@cf/%s", gen.baseURL, gen.accountID, gen.model)
@@ -283,6 +305,29 @@ func (gen *generator) handleResponse(resp *http.Response, input *ai.ModelRequest
 		return nil, errors.New(errMsg)
 	}
 
+	// if its a tool call return
+	if len(workerResp.Result.ToolCalls) > 0 {
+		var toolRequestParts []*ai.Part
+		for _, call := range workerResp.Result.ToolCalls {
+			tr := &ai.ToolRequest{
+				Name:  call.Name,
+				Input: call.Arguments,
+			}
+			toolRequestParts = append(toolRequestParts, ai.NewToolRequestPart(tr))
+		}
+
+		response := &ai.ModelResponse{
+			Request:      input,
+			FinishReason: ai.FinishReasonStop,
+			Message: &ai.Message{
+				Role:    ai.RoleModel,
+				Content: toolRequestParts,
+			},
+		}
+
+		return response, nil
+	}
+
 	response := &ai.ModelResponse{
 		Request:      input,
 		FinishReason: ai.FinishReason("stop"),
@@ -301,6 +346,52 @@ func (gen *generator) handleStreamingResponse(ctx context.Context, resp *http.Re
 	// Note: Workers AI streaming implementation would depend on their specific streaming format
 	// For now, we'll fall back to non-streaming behavior
 	return gen.handleResponse(resp, input)
+}
+
+func (gen *generator) toWorkersAIMessages(messages []*ai.Message) ([]workersAIMessage, error) {
+	var wmsgs []workersAIMessage
+
+	for _, msg := range messages {
+		var text strings.Builder
+		var toolCalls []workersAIToolCall
+
+		for _, part := range msg.Content {
+			switch {
+			case part.IsText():
+				text.WriteString(part.Text)
+			case part.IsToolRequest():
+				inputRawMsg, err := asJSONRawMessage(part.ToolRequest.Input)
+				if err != nil {
+					return nil, errors.Wrap(err, "error marshalling tool request input")
+				}
+
+				toolCalls = append(toolCalls, workersAIToolCall{
+					Name:      part.ToolRequest.Name,
+					Arguments: inputRawMsg,
+				})
+			case part.IsToolResponse():
+				outputRawMsg, err := asJSONRawMessage(part.ToolResponse.Output)
+				if err != nil {
+					return nil, errors.Wrap(err, "error marshalling tool response output")
+				}
+
+				wmsgs = append(wmsgs, workersAIMessage{
+					Role:    "tool",
+					Content: string(outputRawMsg),
+				})
+			}
+		}
+
+		if text.Len() > 0 || len(toolCalls) > 0 {
+			wmsgs = append(wmsgs, workersAIMessage{
+				Role:      convertRole(msg.Role),
+				Content:   text.String(),
+				ToolCalls: toolCalls,
+			})
+		}
+	}
+
+	return wmsgs, nil
 }
 
 // ListActions returns the list of available actions for this plugin.
@@ -350,6 +441,36 @@ func (w *WorkersAI) ResolveAction(g *genkit.Genkit, atype core.ActionType, name 
 	return nil
 }
 
+func (gen *generator) toWorkersAITools(input []*ai.ToolDefinition) ([]workersAITool, error) {
+	var tools []workersAITool
+	for _, tool := range input {
+		var schema *jsonschema.Schema
+		if tool.InputSchema != nil {
+			// Marshal the map to JSON bytes.
+			schemaBytes, err := json.Marshal(tool.InputSchema)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal tool schema for %s: %w", tool.Name, err)
+			}
+			// Unmarshal the JSON bytes into the jsonschema.Schema struct.
+			schema = new(jsonschema.Schema)
+			if err := json.Unmarshal(schemaBytes, schema); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal tool schema for %s: %w", tool.Name, err)
+			}
+		}
+
+		tools = append(tools, workersAITool{
+			Type: "function",
+			Function: workersAIFunction{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  schema,
+			},
+		})
+	}
+
+	return tools, nil
+}
+
 // Helper functions
 
 // convertRole converts Genkit roles to Workers AI roles.
@@ -366,40 +487,20 @@ func convertRole(role ai.Role) string {
 	}
 }
 
-// concatenateTextParts concatenates all text parts from a message.
-func concatenateTextParts(parts []*ai.Part) string {
-	var builder strings.Builder
-	for _, part := range parts {
-		if part.IsText() {
-			builder.WriteString(part.Text)
-		}
-	}
-	return builder.String()
-}
+func asJSONRawMessage(input any) (json.RawMessage, error) {
+	var args json.RawMessage
 
-// buildPrompt builds a simple prompt from messages for models that don't support chat format.
-func buildPrompt(messages []*ai.Message) string {
-	var builder strings.Builder
-	for _, msg := range messages {
-		content := concatenateTextParts(msg.Content)
-		if content != "" {
-			switch msg.Role {
-			case ai.RoleSystem:
-				builder.WriteString("System: " + content + "\n")
-			case ai.RoleUser:
-				builder.WriteString("User: " + content + "\n")
-			case ai.RoleModel:
-				builder.WriteString("Assistant: " + content + "\n")
-			}
-		}
+	switch v := input.(type) {
+	case json.RawMessage:
+		args = v
+	case []byte:
+		args = v
+	case string:
+		args = []byte(v)
+	default:
+		// Fallback for other types: marshal them to JSON.
+		return json.Marshal(v)
 	}
-	return builder.String()
-}
 
-// supportsChatFormat returns true if the model supports chat format.
-func supportsChatFormat(model string) bool {
-	return strings.Contains(model, "llama") ||
-		strings.Contains(model, "mistral") ||
-		strings.Contains(model, "qwen") ||
-		strings.Contains(model, "gemma")
+	return args, nil
 }

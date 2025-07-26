@@ -24,6 +24,7 @@ require (
 	github.com/invopop/jsonschema v0.13.0
 	github.com/jackc/pgx/v5 v5.7.5
 	github.com/jba/slog v0.2.0
+	github.com/kortschak/utter v1.7.0
 	github.com/lib/pq v1.10.9
 	github.com/mark3labs/mcp-go v0.29.0
 	github.com/pgvector/pgvector-go v0.3.0
@@ -105,7 +106,7 @@ require (
 	github.com/oklog/ulid v1.3.1 // indirect
 	github.com/openai/openai-go v1.8.2
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
-	github.com/pkg/errors v0.9.1 // indirect
+	github.com/pkg/errors v0.9.1
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.5.0 // indirect
@@ -138,3 +139,7 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/firebase/genkit/go => .
+
+replace google.golang.org/genai => ../../go-genai
