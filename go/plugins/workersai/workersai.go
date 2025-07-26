@@ -17,72 +17,31 @@
 package workersai
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"strings"
 	"sync"
-	"time"
 
+	workersai "github.com/ashishdatta/workers-ai-golang/workers-ai"
 	"github.com/firebase/genkit/go/ai"
-	"github.com/firebase/genkit/go/core"
 	"github.com/firebase/genkit/go/genkit"
+	"github.com/kortschak/utter"
+	"github.com/pkg/errors"
 )
 
 const provider = "workersai"
 
-// WorkersAI provides configuration options for the Workers AI plugin.
+// WorkersAI holds the shared client instance.
 type WorkersAI struct {
-	APIToken  string // API token for Cloudflare Workers AI. If empty, the value of the environment variable CLOUDFLARE_API_TOKEN will be used.
-	AccountID string // Cloudflare account ID. If empty, the value of the environment variable CLOUDFLARE_ACCOUNT_ID will be used.
-	BaseURL   string // Base URL for the API. If empty, defaults to "https://api.cloudflare.com/client/v4".
-
-	httpClient *http.Client
-	mu         sync.Mutex
-	initted    bool
+	client  *workersai.Client
+	mu      sync.Mutex
+	initted bool
 }
 
-// workersAIRequest represents the request structure for Workers AI API.
-type workersAIRequest struct {
-	Messages []workersAIMessage `json:"messages,omitempty"`
-	Prompt   string             `json:"prompt,omitempty"`
-	Stream   bool               `json:"stream,omitempty"`
-}
-
-// workersAIMessage represents a message in the Workers AI API format.
-type workersAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// workersAIResponse represents the response structure from Workers AI API.
-type workersAIResponse struct {
-	Success bool   `json:"success"`
-	Result  Result `json:"result"`
-	Errors  []struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	} `json:"errors"`
-	Messages []interface{} `json:"messages"`
-}
-
-// Result represents the result structure in the Workers AI response.
-type Result struct {
-	Response string `json:"response"`
-}
-
-// generator holds the configuration for generating responses.
 type generator struct {
-	model     string
-	apiToken  string
-	accountID string
-	baseURL   string
-	client    *http.Client
+	model  string
+	client *workersai.Client
 }
 
 // Name returns the name of the plugin.
@@ -90,268 +49,249 @@ func (w *WorkersAI) Name() string {
 	return provider
 }
 
-// Init initializes the Workers AI plugin.
-func (w *WorkersAI) Init(ctx context.Context, g *genkit.Genkit) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if w.initted {
-		return errors.New("Workers AI plugin already initialized")
-	}
-
+// Init initializes the Workers AI plugin and the shared client.
+func (w *WorkersAI) Init(ctx context.Context, g *genkit.Genkit) (err error) {
 	if w == nil {
 		w = &WorkersAI{}
 	}
 
-	// Set API token from environment if not provided
-	apiToken := w.APIToken
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.initted {
+		return errors.New("workersai plugin already initialized")
+	}
+
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("WorkersAI.Init: %w", err)
+		}
+	}()
+
+	apiToken := os.Getenv("CLOUDFLARE_API_TOKEN")
 	if apiToken == "" {
-		apiToken = os.Getenv("CLOUDFLARE_API_TOKEN")
-		if apiToken == "" {
-			return errors.New("Workers AI requires setting CLOUDFLARE_API_TOKEN in the environment or providing APIToken in config")
-		}
+		return errors.New("Workers AI requires setting CLOUDFLARE_API_TOKEN in the environment")
 	}
 
-	// Set account ID from environment if not provided
-	accountID := w.AccountID
+	accountID := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
 	if accountID == "" {
-		accountID = os.Getenv("CLOUDFLARE_ACCOUNT_ID")
-		if accountID == "" {
-			return errors.New("Workers AI requires setting CLOUDFLARE_ACCOUNT_ID in the environment or providing AccountID in config")
-		}
+		return errors.New("Workers AI requires setting CLOUDFLARE_ACCOUNT_ID in the environment")
 	}
 
-	// Set base URL if not provided
-	baseURL := w.BaseURL
-	if baseURL == "" {
-		baseURL = "https://api.cloudflare.com/client/v4"
-	}
-
-	// Create HTTP client if not provided
-	if w.httpClient == nil {
-		w.httpClient = &http.Client{
-			Timeout: 30 * time.Second,
-		}
-	}
-
-	w.APIToken = apiToken
-	w.AccountID = accountID
-	w.BaseURL = baseURL
+	// Initialize the client from your library.
+	w.client = workersai.NewClient(accountID, apiToken)
 	w.initted = true
+	w.client.Debug = true
 
-	// Register known models
-	models := getKnownModels()
-	for modelName, modelInfo := range models {
-		w.DefineModel(g, modelName, &modelInfo)
+	// You can still register known models here if you have a predefined list.
+	for name, info := range supportedWorkersAIModels {
+		w.defineModel(g, name, info)
 	}
 
 	return nil
 }
 
-// DefineModel defines a Workers AI model with the given name and configuration.
-func (w *WorkersAI) DefineModel(g *genkit.Genkit, name string, info *ai.ModelInfo) ai.Model {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+func (w *WorkersAI) defineModel(g *genkit.Genkit, name string, info ai.ModelInfo) ai.Model {
+	gen := &generator{
+		model:  name,
+		client: w.client,
+	}
 
-	if !w.initted {
+	return genkit.DefineModel(g, provider, name, &info, gen.generate)
+}
+
+// DefineModel defines a Workers AI model.
+func (w *WorkersAI) DefineModel(g *genkit.Genkit, name string, info *ai.ModelInfo) ai.Model {
+	if w.client == nil {
 		panic("Workers AI plugin not initialized")
 	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
 	var mi ai.ModelInfo
 	if info != nil {
 		mi = *info
 	} else {
+		// Default model info, assuming tool support.
 		mi = ai.ModelInfo{
-			Label:    "Workers AI - " + name,
+			Label: "Workers AI - " + name,
 			Supports: &ai.ModelSupports{
 				Multiturn:  true,
 				SystemRole: true,
-				Media:      false, // Most Workers AI models don't support media yet
-				Tools:      false, // Tool calling support varies by model
+				Media:      false,
+				Tools:      true,
 			},
-			Versions: []string{},
 		}
 	}
 
-	gen := &generator{
-		model:     name,
-		apiToken:  w.APIToken,
-		accountID: w.AccountID,
-		baseURL:   w.BaseURL,
-		client:    w.httpClient,
-	}
-
-	return genkit.DefineModel(g, provider, name, &mi, gen.generate)
+	return w.defineModel(g, name, mi)
 }
 
-// IsDefinedModel reports whether a model is defined.
+// generate is now the core translation layer.
+func (gen *generator) generate(ctx context.Context, input *ai.ModelRequest, cb func(context.Context, *ai.ModelResponseChunk) error) (*ai.ModelResponse, error) {
+	// 1. Convert Genkit Tools to the client library's FunctionTool format.
+	clientTools, err := toClientTools(input.Tools)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to convert tools")
+	}
+
+	// 2. Convert Genkit Messages to the client library's Message format.
+	clientMessages, err := toClientMessages(input.Messages)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to convert messages")
+	}
+
+	// 3. Call the client library. All HTTP complexity is handled here.
+	resp, err := gen.client.ChatWithTools(gen.model, clientMessages, clientTools)
+	if err != nil {
+		return nil, errors.Wrap(err, "workersai client failed")
+	}
+
+	if !resp.Success {
+		return nil, fmt.Errorf("workersai API returned an error: %v", resp.Errors)
+	}
+
+	var promptTokens, completionTokens int
+	if resp.IsLegacyResult {
+		promptTokens = resp.LegacyResponse.PromptTokens
+		completionTokens = resp.LegacyResponse.CompletionTokens
+	} else {
+		promptTokens = resp.OpenAIResponse.Usage.PromptTokens
+		completionTokens = resp.OpenAIResponse.Usage.CompletionTokens
+	}
+
+	// 4. Process the response.
+	modelResponse := &ai.ModelResponse{
+		Request: input,
+		Usage: &ai.GenerationUsage{
+			InputTokens:  promptTokens,
+			OutputTokens: completionTokens,
+		},
+	}
+
+	// Check if the response contains tool calls.
+	toolCalls := resp.GetToolCalls()
+
+	utter.Dump(toolCalls)
+	if len(toolCalls) > 0 {
+		var toolRequestParts []*ai.Part
+		for _, call := range toolCalls {
+			// The client library's `Arguments` field is a string, which we
+			// wrap in json.RawMessage for Genkit.
+			toolRequest := &ai.ToolRequest{
+				Name:  call.Function.Name,
+				Input: call.Function.Arguments,
+			}
+
+			toolRequestParts = append(toolRequestParts, ai.NewToolRequestPart(toolRequest))
+		}
+		modelResponse.Message = &ai.Message{Role: ai.RoleModel, Content: toolRequestParts}
+		modelResponse.FinishReason = ai.FinishReasonStop
+	} else {
+		// Handle a standard text response.
+		modelResponse.Message = &ai.Message{
+			Role:    ai.RoleModel,
+			Content: []*ai.Part{ai.NewTextPart(resp.GetContent())},
+		}
+		modelResponse.FinishReason = ai.FinishReasonStop
+	}
+
+	return modelResponse, nil
+}
+
 func IsDefinedModel(g *genkit.Genkit, name string) bool {
 	return genkit.LookupModel(g, provider, name) != nil
 }
 
-// Model returns the [ai.Model] with the given name.
 func Model(g *genkit.Genkit, name string) ai.Model {
 	return genkit.LookupModel(g, provider, name)
 }
 
-// ModelRef creates a new ModelRef for a Workers AI model.
 func ModelRef(name string) ai.ModelRef {
 	return ai.NewModelRef(provider+"/"+name, nil)
 }
 
-// generate performs the actual generation using the Workers AI API.
-func (gen *generator) generate(ctx context.Context, input *ai.ModelRequest, cb func(context.Context, *ai.ModelResponseChunk) error) (*ai.ModelResponse, error) {
-	// Build the request
-	req := &workersAIRequest{
-		Stream: cb != nil,
+// toClientTools converts Genkit tool definitions to the client library's format.
+func toClientTools(defs []*ai.ToolDefinition) ([]workersai.FunctionTool, error) {
+	if len(defs) == 0 {
+		return nil, nil
 	}
+	var tools []workersai.FunctionTool
+	for _, def := range defs {
+		// This struct is used to easily parse the schema from Genkit's map[string]any.
+		type schemaDef struct {
+			Type       string                          `json:"type"`
+			Properties map[string]*workersai.Parameter `json:"properties"`
+			Required   []string                        `json:"required"`
+		}
 
-	// Check if the model supports chat format or requires prompt format
-	if supportsChatFormat(gen.model) {
-		// Convert messages to Workers AI format
-		var messages []workersAIMessage
-		for _, msg := range input.Messages {
-			content := concatenateTextParts(msg.Content)
-			if content != "" {
-				messages = append(messages, workersAIMessage{
-					Role:    convertRole(msg.Role),
-					Content: content,
-				})
+		var schema schemaDef
+		if def.InputSchema != nil {
+			schemaBytes, err := json.Marshal(def.InputSchema)
+			if err != nil {
+				return nil, errors.Wrapf(err, "failed to marshal schema for tool %s", def.Name)
+			}
+			if err := json.Unmarshal(schemaBytes, &schema); err != nil {
+				return nil, errors.Wrapf(err, "failed to unmarshal schema for tool %s", def.Name)
 			}
 		}
-		req.Messages = messages
-	} else {
-		// Use prompt format for models that don't support chat
-		req.Prompt = buildPrompt(input.Messages)
-	}
 
-	// Make the API request
-	url := fmt.Sprintf("%s/accounts/%s/ai/run/@cf/%s", gen.baseURL, gen.accountID, gen.model)
-
-	jsonData, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+gen.apiToken)
-
-	resp, err := gen.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Handle streaming response
-	if cb != nil {
-		return gen.handleStreamingResponse(ctx, resp, cb, input)
-	}
-
-	// Handle non-streaming response
-	return gen.handleResponse(resp, input)
-}
-
-// handleResponse processes a non-streaming response from Workers AI.
-func (gen *generator) handleResponse(resp *http.Response, input *ai.ModelRequest) (*ai.ModelResponse, error) {
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	var workerResp workersAIResponse
-	if err := json.Unmarshal(body, &workerResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	if !workerResp.Success {
-		errMsg := "API request failed"
-		if len(workerResp.Errors) > 0 {
-			errMsg = workerResp.Errors[0].Message
-		}
-		return nil, fmt.Errorf(errMsg)
-	}
-
-	response := &ai.ModelResponse{
-		Request:      input,
-		FinishReason: ai.FinishReason("stop"),
-		Message: &ai.Message{
-			Role:    ai.RoleModel,
-			Content: []*ai.Part{ai.NewTextPart(workerResp.Result.Response)},
-		},
-		Usage: &ai.GenerationUsage{}, // Workers AI doesn't provide usage metrics in the response
-	}
-
-	return response, nil
-}
-
-// handleStreamingResponse processes a streaming response from Workers AI.
-func (gen *generator) handleStreamingResponse(ctx context.Context, resp *http.Response, cb func(context.Context, *ai.ModelResponseChunk) error, input *ai.ModelRequest) (*ai.ModelResponse, error) {
-	// Note: Workers AI streaming implementation would depend on their specific streaming format
-	// For now, we'll fall back to non-streaming behavior
-	return gen.handleResponse(resp, input)
-}
-
-// ListActions returns the list of available actions for this plugin.
-func (w *WorkersAI) ListActions(ctx context.Context) []core.ActionDesc {
-	var actions []core.ActionDesc
-
-	models := getKnownModels()
-	for modelName, modelInfo := range models {
-		metadata := map[string]any{
-			"model": map[string]any{
-				"supports": map[string]any{
-					"media":       modelInfo.Supports.Media,
-					"multiturn":   modelInfo.Supports.Multiturn,
-					"systemRole":  modelInfo.Supports.SystemRole,
-					"tools":       modelInfo.Supports.Tools,
-					"toolChoice":  false, // Workers AI doesn't support tool choice
-					"constrained": false, // Workers AI doesn't support constrained generation
+		tools = append(tools, workersai.FunctionTool{
+			Type: "function",
+			Function: struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+				Parameters  struct {
+					Type       string                          `json:"type"`
+					Required   []string                        `json:"required"`
+					Properties map[string]*workersai.Parameter `json:"properties"`
+				} `json:"parameters"`
+			}{
+				Name:        def.Name,
+				Description: def.Description,
+				Parameters: struct {
+					Type       string                          `json:"type"`
+					Required   []string                        `json:"required"`
+					Properties map[string]*workersai.Parameter `json:"properties"`
+				}{
+					Type:       schema.Type,
+					Required:   schema.Required,
+					Properties: schema.Properties,
 				},
-				"versions": modelInfo.Versions,
-				"stage":    string(modelInfo.Stage),
 			},
-		}
-		metadata["label"] = modelInfo.Label
-
-		actions = append(actions, core.ActionDesc{
-			Type:     core.ActionTypeModel,
-			Name:     fmt.Sprintf("%s/%s", provider, modelName),
-			Key:      fmt.Sprintf("/%s/%s/%s", core.ActionTypeModel, provider, modelName),
-			Metadata: metadata,
 		})
 	}
-
-	return actions
+	return tools, nil
 }
 
-// ResolveAction resolves an action by type and name.
-func (w *WorkersAI) ResolveAction(g *genkit.Genkit, atype core.ActionType, name string) error {
-	switch atype {
-	case core.ActionTypeModel:
-		models := getKnownModels()
-		if modelInfo, exists := models[name]; exists {
-			w.DefineModel(g, name, &modelInfo)
-		} else {
-			// Define with default info if model not in known list
-			w.DefineModel(g, name, nil)
+// toClientMessages converts Genkit messages to the client library's format.
+func toClientMessages(messages []*ai.Message) ([]workersai.Message, error) {
+	var clientMsgs []workersai.Message
+	for _, msg := range messages {
+		text := msg.Text()
+
+		// Handle tool response messages.
+		if msg.Role == ai.RoleTool {
+			clientMsgs = append(clientMsgs, workersai.Message{
+				Role:    "tool",
+				Content: text,
+				// Assuming the ToolResponse Name corresponds to a ToolCallID.
+				// The client library schema expects a ToolCallID here.
+				// This might need adjustment if the API requires a specific ID from the request.
+				// ToolCallID: part.ToolResponse.Name,
+			})
+			continue
 		}
+
+		clientMsgs = append(clientMsgs, workersai.Message{
+			Role:    convertRole(msg.Role),
+			Content: text,
+		})
 	}
-	return nil
+	return clientMsgs, nil
 }
 
-// Helper functions
-
-// convertRole converts Genkit roles to Workers AI roles.
+// convertRole converts Genkit roles to the client library's format.
 func convertRole(role ai.Role) string {
 	switch role {
 	case ai.RoleUser:
@@ -360,45 +300,9 @@ func convertRole(role ai.Role) string {
 		return "assistant"
 	case ai.RoleSystem:
 		return "system"
+	case ai.RoleTool:
+		return "tool"
 	default:
 		return "user"
 	}
-}
-
-// concatenateTextParts concatenates all text parts from a message.
-func concatenateTextParts(parts []*ai.Part) string {
-	var builder strings.Builder
-	for _, part := range parts {
-		if part.IsText() {
-			builder.WriteString(part.Text)
-		}
-	}
-	return builder.String()
-}
-
-// buildPrompt builds a simple prompt from messages for models that don't support chat format.
-func buildPrompt(messages []*ai.Message) string {
-	var builder strings.Builder
-	for _, msg := range messages {
-		content := concatenateTextParts(msg.Content)
-		if content != "" {
-			switch msg.Role {
-			case ai.RoleSystem:
-				builder.WriteString("System: " + content + "\n")
-			case ai.RoleUser:
-				builder.WriteString("User: " + content + "\n")
-			case ai.RoleModel:
-				builder.WriteString("Assistant: " + content + "\n")
-			}
-		}
-	}
-	return builder.String()
-}
-
-// supportsChatFormat returns true if the model supports chat format.
-func supportsChatFormat(model string) bool {
-	return strings.Contains(model, "llama") ||
-		   strings.Contains(model, "mistral") ||
-		   strings.Contains(model, "qwen") ||
-		   strings.Contains(model, "gemma")
 }
