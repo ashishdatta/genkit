@@ -3,8 +3,8 @@ package workersai
 import "github.com/firebase/genkit/go/ai"
 
 const (
-	mistralSmall3124BInstruct     = "mistralai/mistral-small-3.1-24b-instruct"
-	metaLlama3370bInstructFp8Fast = "meta/llama-3.3-70b-instruct-fp8-fast"
+	mistralSmall3124BInstruct     = "@cf/mistralai/mistral-small-3.1-24b-instruct"
+	metaLlama3370bInstructFp8Fast = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 )
 
 var (

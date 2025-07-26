@@ -23,22 +23,11 @@ func requireEnv(key string) (string, bool) {
 }
 
 func TestWorkersAILive(t *testing.T) {
-	apiToken, ok := requireEnv("CLOUDFLARE_API_TOKEN")
-	if !ok {
-		t.Skip("no CLOUDFLARE_API_TOKEN key provided, set CLOUDFLARE_API_TOKEN as an environment variable")
-	}
-
-	accountID, ok := requireEnv("CLOUDFLARE_ACCOUNT_ID")
-	if !ok {
-		t.Skip("no CLOUDFLARE_ACCOUNT_ID provided, set CLOUDFLARE_ACCOUNT_ID as an environment variable")
-	}
-
 	ctx := context.Background()
 
 	g, err := genkit.Init(ctx,
-		genkit.WithPlugins(&workersai.WorkersAI{APIToken: apiToken, AccountID: accountID}),
-		// genkit prefixes the provider to the model name and so the model here is specified with the workersai prefix
-		genkit.WithDefaultModel("workersai/mistralai/mistral-small-3.1-24b-instruct"),
+		genkit.WithPlugins(&workersai.WorkersAI{}),
+		genkit.WithDefaultModel("workersai/@cf/mistralai/mistral-small-3.1-24b-instruct"),
 	)
 	if err != nil {
 		log.Fatal(err)
