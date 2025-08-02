@@ -31,7 +31,8 @@ func TestWorkersAILive(t *testing.T) {
 		genkit.WithPlugins(&WorkersAI{}),
 		// TODO: doesn't work with the mistralai model
 		//genkit.WithDefaultModel("workersai/@cf/mistralai/mistral-small-3.1-24b-instruct"),
-		genkit.WithDefaultModel("workersai/@cf/meta/llama-4-scout-17b-16e-instruct"),
+		//genkit.WithDefaultModel("workersai/@cf/meta/llama-4-scout-17b-16e-instruct"),
+		genkit.WithDefaultModel("workersai/@cf/qwen/qwen3-30b-a3b-fp8"),
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -212,8 +213,6 @@ func TestToGenkitToolRequestParts(t *testing.T) {
 	}
 }
 
-// TestToClientMessages uses a table-driven approach to validate the conversion
-// of Genkit messages to the format expected by the Workers AI client library.
 func TestToClientMessages(t *testing.T) {
 	// Define the structure for our test cases
 	testCases := []struct {
@@ -250,6 +249,7 @@ func TestToClientMessages(t *testing.T) {
 				ai.NewModelMessage(ai.NewTextPart("Go is a programming language.")),
 			},
 			expected: []interface{}{
+				// For simple text responses, we expect a ResponseMessage with Content.
 				client.ChatMessage{Role: "assistant", Content: "Go is a programming language."},
 			},
 			expectErr: false,
@@ -288,6 +288,8 @@ func TestToClientMessages(t *testing.T) {
 				// Assistant message with the tool call request
 				client.ResponseMessage{
 					Role: "assistant",
+					// Add an empty string content field to satisfy strict models like qwen.
+					Content: new(string),
 					ToolCalls: []client.ToolCall{
 						{
 							ID:   "tool-call-id-123",
@@ -336,7 +338,8 @@ func TestToClientMessages(t *testing.T) {
 			expected: []interface{}{
 				client.ChatMessage{Role: "user", Content: "lookup user Jane Doe"},
 				client.ResponseMessage{
-					Role: "assistant",
+					Role:    "assistant",
+					Content: new(string),
 					ToolCalls: []client.ToolCall{{
 						ID:   "lookup-id-456",
 						Type: "function",
@@ -382,7 +385,8 @@ func TestToClientMessages(t *testing.T) {
 			expected: []interface{}{
 				client.ChatMessage{Role: "user", Content: "create an alert for 'server-down' with priority 1 and silent false"},
 				client.ResponseMessage{
-					Role: "assistant",
+					Role:    "assistant",
+					Content: new(string),
 					ToolCalls: []client.ToolCall{{
 						ID:   "alert-id-789",
 						Type: "function",
@@ -430,7 +434,8 @@ func TestToClientMessages(t *testing.T) {
 			expected: []interface{}{
 				client.ChatMessage{Role: "user", Content: "update user config with theme dark and notifications enabled"},
 				client.ResponseMessage{
-					Role: "assistant",
+					Role:    "assistant",
+					Content: new(string),
 					ToolCalls: []client.ToolCall{{
 						ID:   "config-id-abc",
 						Type: "function",
@@ -472,7 +477,8 @@ func TestToClientMessages(t *testing.T) {
 			expected: []interface{}{
 				client.ChatMessage{Role: "user", Content: "add tags 'urgent' and 'review' to ticket 123"},
 				client.ResponseMessage{
-					Role: "assistant",
+					Role:    "assistant",
+					Content: new(string),
 					ToolCalls: []client.ToolCall{{
 						ID:   "tags-id-def",
 						Type: "function",
@@ -516,7 +522,8 @@ func TestToClientMessages(t *testing.T) {
 			expected: []interface{}{
 				client.ChatMessage{Role: "user", Content: "Find user 'jdoe' and get their last login."},
 				client.ResponseMessage{
-					Role: "assistant",
+					Role:    "assistant",
+					Content: new(string),
 					ToolCalls: []client.ToolCall{
 						{
 							ID: "multi-id-1", Type: "function",
@@ -530,6 +537,43 @@ func TestToClientMessages(t *testing.T) {
 				},
 				client.ToolMessage{Role: "tool", Content: `{"userId":"user-456"}`, ToolCallID: "multi-id-1"},
 				client.ToolMessage{Role: "tool", Content: `{"timestamp":"2025-07-28T14:30:00Z"}`, ToolCallID: "multi-id-2"},
+			},
+			expectErr: false,
+		},
+		{
+			name: "Model message with both tool request and text content",
+			input: []*ai.Message{
+				{
+					Role: ai.RoleModel,
+					Content: []*ai.Part{
+						// This part makes msg.Text() non-empty
+						ai.NewTextPart("I will now call the tool."),
+						// This part makes the toolCalls slice non-empty
+						ai.NewToolRequestPart(&ai.ToolRequest{
+							Name:  "someTool",
+							Input: map[string]any{"arg": "value"},
+							Ref:   "combo-id-1",
+						}),
+					},
+				},
+			},
+			expected: []interface{}{
+				// The if/else if logic should prioritize the tool call
+				// and ignore the text part, producing only one message.
+				client.ResponseMessage{
+					Role:    "assistant",
+					Content: new(string),
+					ToolCalls: []client.ToolCall{
+						{
+							ID:   "combo-id-1",
+							Type: "function",
+							Function: client.FunctionToCall{
+								Name:      "someTool",
+								Arguments: `{"arg":"value"}`,
+							},
+						},
+					},
+				},
 			},
 			expectErr: false,
 		},
@@ -574,26 +618,36 @@ func TestToClientMessages(t *testing.T) {
 				expectedMsg := tc.expected[i]
 				gotMsg := got[i]
 
-				// The ResponseMessage contains tool calls with JSON strings that need special handling.
-				if expectedResp, ok := expectedMsg.(client.ResponseMessage); ok {
-					gotResp, ok := gotMsg.(client.ResponseMessage)
+				// The ResponseMessage and ChatMessage now need to be handled carefully
+				// since they are both used for assistant roles.
+				switch expected := expectedMsg.(type) {
+				case client.ResponseMessage:
+					got, ok := gotMsg.(client.ResponseMessage)
 					r.True(ok, "expected message type client.ResponseMessage, but got %T", gotMsg)
-
-					r.Equal(expectedResp.Role, gotResp.Role)
-					r.Len(gotResp.ToolCalls, len(expectedResp.ToolCalls))
-
-					for j, expectedCall := range expectedResp.ToolCalls {
-						gotCall := gotResp.ToolCalls[j]
-						// Compare basic fields
+					r.Equal(expected.Role, got.Role)
+					if expected.Content != nil || got.Content != nil {
+						r.NotNil(expected.Content)
+						r.NotNil(got.Content)
+						r.Equal(*expected.Content, *got.Content)
+					}
+					r.Len(got.ToolCalls, len(expected.ToolCalls))
+					for j, expectedCall := range expected.ToolCalls {
+						gotCall := got.ToolCalls[j]
 						r.Equal(expectedCall.ID, gotCall.ID)
 						r.Equal(expectedCall.Type, gotCall.Type)
 						r.Equal(expectedCall.Function.Name, gotCall.Function.Name)
-						// Use JSONEq to compare arguments, ignoring key order and whitespace.
 						r.JSONEq(expectedCall.Function.Arguments, gotCall.Function.Arguments)
 					}
-				} else {
-					// For all other message types, a direct comparison is sufficient.
-					r.Equal(expectedMsg, gotMsg)
+				case client.ChatMessage:
+					got, ok := gotMsg.(client.ChatMessage)
+					r.True(ok, "expected message type client.ChatMessage, but got %T", gotMsg)
+					r.Equal(expected, got)
+				case client.ToolMessage:
+					got, ok := gotMsg.(client.ToolMessage)
+					r.True(ok, "expected message type client.ToolMessage, but got %T", gotMsg)
+					r.Equal(expected, got)
+				default:
+					r.Failf("unhandled message type", "type: %T", expected)
 				}
 			}
 		})

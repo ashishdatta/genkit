@@ -324,10 +324,9 @@ func toClientMessages(messages []*ai.Message) ([]client.Message, error) {
 				clientMsgs = append(clientMsgs, client.ResponseMessage{
 					Role:      "assistant",
 					ToolCalls: toolCalls,
+					Content:   new(string),
 				})
-			}
-			// If it's a simple text response from the model, handle that too.
-			if msg.Text() != "" {
+			} else if msg.Text() != "" {
 				clientMsgs = append(clientMsgs, client.ChatMessage{
 					Role:    "assistant",
 					Content: msg.Text(),
