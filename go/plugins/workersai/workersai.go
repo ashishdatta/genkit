@@ -183,6 +183,8 @@ func (gen *generator) generate(ctx context.Context, input *ai.ModelRequest, cb f
 		modelResponse.Usage.OutputTokens = resp.ChatCompletionResponse.Usage.CompletionTokens
 	}
 
+	reasoningPart := ai.NewReasoningPart(resp.GetReasoningContent(), nil)
+
 	// Check if the response contains tool calls.
 	toolCalls := resp.GetToolCalls()
 	if len(toolCalls) > 0 {
@@ -191,13 +193,26 @@ func (gen *generator) generate(ctx context.Context, input *ai.ModelRequest, cb f
 			return nil, err
 		}
 
-		modelResponse.Message = &ai.Message{Role: ai.RoleModel, Content: toolRequestParts}
+		if reasoningPart.Text != "" {
+			toolRequestParts = append(toolRequestParts, reasoningPart)
+		}
+
+		modelResponse.Message = &ai.Message{
+			Role:    ai.RoleModel,
+			Content: toolRequestParts,
+		}
 		modelResponse.FinishReason = ai.FinishReasonStop
 	} else {
 		// Handle a standard text response.
+		contentParts := []*ai.Part{ai.NewTextPart(resp.GetContent())}
+
+		if reasoningPart.Text != "" {
+			contentParts = append(contentParts, reasoningPart)
+		}
+
 		modelResponse.Message = &ai.Message{
 			Role:    ai.RoleModel,
-			Content: []*ai.Part{ai.NewTextPart(resp.GetContent())},
+			Content: contentParts,
 		}
 		modelResponse.FinishReason = ai.FinishReasonStop
 	}

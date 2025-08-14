@@ -56,9 +56,9 @@ func TestWorkersAILive(t *testing.T) {
 		if resp.Request == nil {
 			t.Error("Request field not set properly")
 		}
-	})
 
-	// TODO: figure out why this isn't functional
+		assert.NotEmpty(t, resp.Reasoning())
+	})
 
 	gablorkenTool := genkit.DefineTool(g, "gablorken", "use this tool when the user asks to calculate a gablorken, carefuly inspect the user input to determine which value from the prompt corresponds to the input structure",
 		func(ctx *ai.ToolContext, input struct {
@@ -88,6 +88,8 @@ func TestWorkersAILive(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("got %q, expecting it to contain %q", out, want)
 		}
+
+		assert.NotEmpty(t, resp.Reasoning())
 	})
 
 }
