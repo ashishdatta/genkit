@@ -95,7 +95,6 @@ func TestWorkersAILive(t *testing.T) {
 }
 
 func TestToGenkitToolRequestParts(t *testing.T) {
-	// Define test cases in a table for clarity and maintainability.
 	testCases := []struct {
 		name          string
 		inputCalls    []client.ToolCall

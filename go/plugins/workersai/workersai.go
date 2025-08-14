@@ -220,26 +220,6 @@ func (gen *generator) generate(ctx context.Context, input *ai.ModelRequest, cb f
 	return modelResponse, nil
 }
 
-// simplifyArguments adapts verbose model arguments into the simple format Genkit expects.
-func simplifyArguments(argsJSON string) (map[string]any, error) {
-	var rawArgs map[string]any
-	if err := json.Unmarshal([]byte(argsJSON), &rawArgs); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal tool arguments from string: %w", err)
-	}
-
-	simplifiedArgs := make(map[string]any)
-	for key, val := range rawArgs {
-		if argObject, ok := val.(map[string]any); ok {
-			if value, hasValue := argObject["value"]; hasValue {
-				simplifiedArgs[key] = value
-				continue
-			}
-		}
-		simplifiedArgs[key] = val
-	}
-	return simplifiedArgs, nil
-}
-
 // toGenkitToolRequestParts adapts the tool calls from the client library's response
 // into a slice of *ai.Part suitable for Genkit. It handles both simple and verbose
 // argument formats from different models.
