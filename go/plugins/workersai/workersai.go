@@ -125,6 +125,7 @@ func (w *WorkersAI) DefineModel(g *genkit.Genkit, name string, info *ai.ModelInf
 			},
 		}
 	}
+
 	w.defineModel(g, name, mi)
 }
 
@@ -142,8 +143,23 @@ func (gen *generator) generate(ctx context.Context, input *ai.ModelRequest, cb f
 		return nil, errors.Wrap(err, "failed to convert messages")
 	}
 
+	var modelParameters *client.ModelParameters
+	if input.Config != nil {
+		switch c := input.Config.(type) {
+		case ai.GenerationCommonConfig:
+			modelParameters = &client.ModelParameters{
+				MaxTokens:   int64(c.MaxOutputTokens),
+				TopK:        c.TopK,
+				TopP:        c.TopP,
+				Temperature: c.Temperature,
+			}
+		default:
+			return nil, fmt.Errorf("Unexpected Config type, expected type ai.GenerationCommonConfig{}")
+		}
+	}
+
 	// 3. Call the client library. All HTTP and response format complexity is handled here.
-	resp, err := gen.client.ChatWithTools(gen.model, clientMessages, clientTools)
+	resp, err := gen.client.ChatWithTools(gen.model, clientMessages, clientTools, modelParameters)
 	if err != nil {
 		return nil, errors.Wrap(err, "workersai client failed")
 	}

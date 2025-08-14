@@ -29,7 +29,6 @@ func TestWorkersAILive(t *testing.T) {
 
 	g, err := genkit.Init(ctx,
 		genkit.WithPlugins(&WorkersAI{}),
-		// TODO: doesn't work with the mistralai model
 		//genkit.WithDefaultModel("workersai/@cf/mistralai/mistral-small-3.1-24b-instruct"),
 		//genkit.WithDefaultModel("workersai/@cf/meta/llama-4-scout-17b-16e-instruct"),
 		genkit.WithDefaultModel("workersai/@cf/qwen/qwen3-30b-a3b-fp8"),
@@ -41,6 +40,9 @@ func TestWorkersAILive(t *testing.T) {
 	t.Run("generate", func(t *testing.T) {
 		resp, err := genkit.Generate(ctx, g,
 			ai.WithPrompt("Which country was Napoleon the emperor of? Name the country, nothing else"),
+			ai.WithConfig(ai.GenerationCommonConfig{
+				Temperature: 1,
+			}),
 		)
 		if err != nil {
 			t.Fatal(err)
