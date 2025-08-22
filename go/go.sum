@@ -58,6 +58,8 @@ github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 h1:DklsrG3d
 github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2/go.mod h1:WaHUgvxTVq04UNunO+XhnAqY/wQc+bxr74GqbsZ/Jqw=
 github.com/ashishdatta/workers-ai-golang v0.1.2 h1:v5GvF7w/fTkEhRk+TMBUlKhSGlsRTXls8wbv8KBxUbQ=
 github.com/ashishdatta/workers-ai-golang v0.1.2/go.mod h1:cRe92jIRNIHi3XoCNRmqo2my2SWxSl9ZMVyw1/yEsdg=
+github.com/ashishdatta/workers-ai-golang v0.1.3 h1:dWAQHYjsIKfrUOe9iMRnAynwpwMHv1drcG10O0j5lIY=
+github.com/ashishdatta/workers-ai-golang v0.1.3/go.mod h1:cRe92jIRNIHi3XoCNRmqo2my2SWxSl9ZMVyw1/yEsdg=
 github.com/bahlo/generic-list-go v0.2.0 h1:5sz/EEAK+ls5wF+NeqDpk5+iNdMDXrh3z3nPnH1Wvgk=
 github.com/bahlo/generic-list-go v0.2.0/go.mod h1:2KvAjgMlE5NNynlg/5iLrrCCZ2+5xWbdbCW3pNTGyYg=
 github.com/blues/jsonata-go v1.5.4 h1:XCsXaVVMrt4lcpKeJw6mNJHqQpWU751cnHdCFUq3xd8=
